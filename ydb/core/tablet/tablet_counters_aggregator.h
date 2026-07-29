@@ -59,6 +59,14 @@ struct TEvTabletCounters {
             TPathId TableId;
             TString TablePath;
             ui64 SchemaVersion = 0;
+
+            // Effective detailed METRICS_LEVEL of the table. Raw NKikimrSchemeOp::
+            // TTableDetailedMetricsSettings::EMetricsLevel value; kept as a plain
+            // integer to keep this header free of the schemeshard proto.
+            ui32 MetricsLevel = 0;
+
+            // Monitoring project id for detailed metrics, database-wide
+            TString MonitoringProjectId;
         };
         std::optional<TTableInfo> TableInfo;
 

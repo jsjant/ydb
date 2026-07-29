@@ -59,6 +59,27 @@ TString MakeRelativeTablePath(const TString& databasePath, const TString& tableP
 }
 
 /**
+ * Remove a counter group, which is shared by the aggregators of the two roles of
+ * the node, as soon as the last of them is done with it.
+ *
+ * @note Both aggregator actors of a node build their leaves within one and the same
+ *       counter tree, and everything above a role bucket or a leaf group is shared
+ *       between them. Removing such a group while the other role is still reporting
+ *       into it would orphan the counters of the other role, which is exactly what
+ *       happens on a single node cluster.
+ */
+void RemoveSharedSubgroupIfEmpty(
+    NMonitoring::TDynamicCounterPtr parentGroup,
+    const TString& name,
+    const TString& value
+) {
+    auto group = parentGroup->FindSubgroup(name, value);
+    if (group && group->ReadSnapshot().empty()) {
+        parentGroup->RemoveSubgroup(name, value);
+    }
+}
+
+/**
  * A single bucket of the detailed metrics counter tree: the low level counters
  * of one or more tablets of the same type.
  *
@@ -243,7 +264,7 @@ public:
         }
 
         if (entry.IsEmpty()) {
-            DatabaseGroup->RemoveSubgroup(TABLE_LABEL, entry.RelativePath);
+            RemoveSharedSubgroupIfEmpty(DatabaseGroup, TABLE_LABEL, entry.RelativePath);
             Tables.erase(it);
         }
     }
@@ -353,12 +374,12 @@ private:
         });
 
         if (!hasOtherFollowers) {
-            entry.PerPartitionGroup->RemoveSubgroup(TABLET_ID_LABEL, tabletIdValue);
+            RemoveSharedSubgroupIfEmpty(entry.PerPartitionGroup, TABLET_ID_LABEL, tabletIdValue);
         }
 
         if (entry.Leaves.empty()) {
             entry.PerPartitionGroup = nullptr;
-            entry.TableGroup->RemoveSubgroup(DETAILED_METRICS_LABEL, PER_PARTITION_VALUE);
+            RemoveSharedSubgroupIfEmpty(entry.TableGroup, DETAILED_METRICS_LABEL, PER_PARTITION_VALUE);
         }
     }
 

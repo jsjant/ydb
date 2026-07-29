@@ -4145,7 +4145,8 @@ void TExecutor::UpdateCounters(const TActorContext &ctx) {
 
         std::optional<TEvTabletCounters::TEvTabletAddCounters::TTableInfo> tableInfo;
         if (const auto *ti = Owner->GetTableInfo()) {
-            tableInfo = TEvTabletCounters::TEvTabletAddCounters::TTableInfo{ti->TableId, ti->TablePath, ti->SchemaVersion};
+            tableInfo = TEvTabletCounters::TEvTabletAddCounters::TTableInfo{
+                ti->TableId, ti->TablePath, ti->SchemaVersion, ti->MetricsLevel, ti->MonitoringProjectId};
         }
 
         TActorId countersAggregator = MakeTabletCountersAggregatorID(SelfId().NodeId(), Stats->IsFollower());
@@ -4180,7 +4181,8 @@ void TExecutor::ForceSendCounters() {
 
         std::optional<TEvTabletCounters::TEvTabletAddCounters::TTableInfo> tableInfo;
         if (const auto *ti = Owner->GetTableInfo()) {
-            tableInfo = TEvTabletCounters::TEvTabletAddCounters::TTableInfo{ti->TableId, ti->TablePath, ti->SchemaVersion};
+            tableInfo = TEvTabletCounters::TEvTabletAddCounters::TTableInfo{
+                ti->TableId, ti->TablePath, ti->SchemaVersion, ti->MetricsLevel, ti->MonitoringProjectId};
         }
 
         TActorId countersAggregator = MakeTabletCountersAggregatorID(SelfId().NodeId(), Stats->IsFollower());

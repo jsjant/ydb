@@ -2,6 +2,7 @@
 #include "tablet_counters_app.h"
 #include "labeled_counters_merger.h"
 #include "labeled_db_counters.h"
+#include "detailed_metrics/node_database_metrics_aggregator.h"
 #include "detailed_metrics/ydb_metrics_mapper.h"
 #include "private/aggregated_counters.h"
 #include "private/aggregated_tablet_counters.h"
@@ -17,6 +18,8 @@
 #include <ydb/core/base/feature_flags.h>
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/counters.h>
+#include <ydb/core/base/path.h>
+#include <ydb/core/protos/flat_scheme_op.pb.h>
 #include <ydb/core/sys_view/common/events.h>
 #include <ydb/core/sys_view/service/db_counters.h>
 #include <ydb/core/sys_view/service/sysview_service.h>
@@ -82,15 +85,86 @@ TActorId MakeTabletCountersAggregatorID(ui32 node, bool follower) {
     }
 }
 
+namespace {
+
+////////////////////////////////////////////
+// Detailed metrics (the private per node counter tree)
+
+// The counter group, which holds the raw per node detailed metrics. It is private:
+// the whole subtree is hidden from an ordinary counters consumer and is only served
+// to the ones, which explicitly ask for the private counters (the "@private" flag).
+const TString DETAILED_METRICS_RAW_GROUP = "ydb_detailed_raw";
+
+// The values of TEvTabletAddCounters::TTableInfo::MetricsLevel are the raw values
+// of the schemeshard proto enum, while the node aggregator has its own enum
+static_assert(static_cast<ui32>(EDetailedMetricsLevel::Unspecified) ==
+    NKikimrSchemeOp::TTableDetailedMetricsSettings::MetricsLevelUnspecified);
+static_assert(static_cast<ui32>(EDetailedMetricsLevel::Disabled) ==
+    NKikimrSchemeOp::TTableDetailedMetricsSettings::MetricsLevelDisabled);
+static_assert(static_cast<ui32>(EDetailedMetricsLevel::Table) ==
+    NKikimrSchemeOp::TTableDetailedMetricsSettings::MetricsLevelTable);
+static_assert(static_cast<ui32>(EDetailedMetricsLevel::Partition) ==
+    NKikimrSchemeOp::TTableDetailedMetricsSettings::MetricsLevelPartition);
+
+/**
+ * @return The level, at which the table collects detailed metrics, or nothing
+ *         if the table collects none of them
+ */
+std::optional<EDetailedMetricsLevel> GetDetailedMetricsLevel(ui32 rawLevel) {
+    const auto level = static_cast<EDetailedMetricsLevel>(rawLevel);
+
+    switch (level) {
+        case EDetailedMetricsLevel::Table:
+        case EDetailedMetricsLevel::Partition:
+            return level;
+
+        case EDetailedMetricsLevel::Unspecified:
+        case EDetailedMetricsLevel::Disabled:
+            return std::nullopt;
+    }
+
+    return std::nullopt;
+}
+
+/**
+ * Get the private root group of the detailed metrics counter tree, creating it once
+ * for the whole node.
+ *
+ * @note Both aggregator actors of the node (the one of the leaders and the one of
+ *       the followers) build their own leaves within this very group, so the group
+ *       itself is created under a lock. The leaves they fill are disjoint (the role
+ *       is implied by the follower id), so no further synchronization is needed:
+ *       the counter groups themselves are thread safe, and the groups, which the two
+ *       actors share, are only removed once both of them are done with them.
+ */
+::NMonitoring::TDynamicCounterPtr GetDetailedMetricsRawGroup(::NMonitoring::TDynamicCounterPtr countersRoot) {
+    static TMutex lock;
+    TGuard<TMutex> guard(lock);
+
+    auto group = countersRoot->FindSubgroup("counters", DETAILED_METRICS_RAW_GROUP);
+    if (!group) {
+        group = MakeIntrusive<::NMonitoring::TDynamicCounters>(
+            ::NMonitoring::TCountableBase::EVisibility::Private);
+        countersRoot->RegisterSubgroup("counters", DETAILED_METRICS_RAW_GROUP, group);
+    }
+
+    return group;
+}
+
+} // namespace <anonymous>
+
 ////////////////////////////////////////////
 class TTabletMon {
 public:
     //
-    TTabletMon(::NMonitoring::TDynamicCounterPtr counters, bool isFollower, TActorId dbWatcherActorId)
-        : Counters(GetServiceCounters(counters, isFollower ? "followers" : "tablets"))
+    TTabletMon(::NMonitoring::TDynamicCounterPtr counters, bool isFollower, TActorId dbWatcherActorId,
+            bool detailedMetricsEnabled = false)
+        : CountersRoot(counters)
+        , Counters(GetServiceCounters(counters, isFollower ? "followers" : "tablets"))
         , AllTypes(MakeIntrusive<TTabletCountersForTabletType>(Counters.Get(), "type", "all"))
         , IsFollower(isFollower)
         , DbWatcherActorId(dbWatcherActorId)
+        , DetailedMetricsEnabled(detailedMetricsEnabled)
     {
         if (!IsFollower) {
             YdbCounters = MakeIntrusive<TYdbTabletCounters>(GetServiceCounters(counters, "ydb"), Counters);
@@ -129,6 +203,106 @@ public:
             if (quietStats.second == nullptr)
                 quietStats.second = new TTabletCountersBase();
             quietStats.second->Populate(*appCounters);
+        }
+    }
+
+    /**
+     * Add the low level counters of a single tablet to the detailed metrics of its table.
+     *
+     * @note This role actor fills only its own leaves of the node wide detailed metrics
+     *       counter tree: the actor of the leaders fills the leader role bucket and
+     *       the follower_id=0 leaves, the actor of the followers fills the follower role
+     *       bucket and the follower_id>0 leaves.
+     */
+    void ApplyDetailedMetrics(ui64 tabletId, ui32 followerId, TTabletTypes::EType tabletType,
+        TPathId tenantPathId, const TEvTabletCounters::TEvTabletAddCounters::TTableInfo& tableInfo,
+        const TTabletCountersBase* executorCounters, const TTabletCountersBase* appCounters,
+        const TActorContext& ctx)
+    {
+        if (!DetailedMetricsEnabled || !tenantPathId || !executorCounters || !appCounters) {
+            // Logged on every round of the counters of every tablet, hence TRACE
+            YDB_LOG_TRACE_CTX(ctx, "Skipping the detailed metrics of the tablet",
+                {"tabletId", tabletId},
+                {"enabled", DetailedMetricsEnabled},
+                {"tenantPathId", tenantPathId.ToString()},
+                {"hasExecutorCounters", executorCounters != nullptr},
+                {"hasAppCounters", appCounters != nullptr});
+            return;
+        }
+
+        const auto level = GetDetailedMetricsLevel(tableInfo.MetricsLevel);
+        if (!level) {
+            YDB_LOG_TRACE_CTX(ctx, "Skipping the detailed metrics of the table",
+                {"tabletId", tabletId},
+                {"tablePath", tableInfo.TablePath},
+                {"metricsLevel", tableInfo.MetricsLevel});
+            return;
+        }
+
+        auto& db = DetailedMetricsByPathId[tenantPathId];
+
+        // The monitoring project is a label of every counter of the database, so
+        // the whole tree has to be rebuilt when it changes
+        if (db.Aggregator && db.MonitoringProjectId != tableInfo.MonitoringProjectId) {
+            ResetDetailedMetricsAggregator(db);
+        }
+        db.MonitoringProjectId = tableInfo.MonitoringProjectId;
+
+        if (!db.Aggregator) {
+            if (!db.DatabasePath) {
+                // The database path is the value of the "database" label, so nothing can be
+                // reported until it is resolved. The tablets report their counters over and
+                // over again, so dropping this round costs a single round of the detailed
+                // metrics of the database (the counters themselves are not lost: the low
+                // level cumulative counters are accumulated by the tablet until they are
+                // consumed by an aggregator)
+                RequestDatabasePath(tenantPathId, db, ctx);
+                return;
+            }
+
+            CreateDetailedMetricsAggregator(db);
+        }
+
+        db.TabletContributions[tabletId].insert(TDetailedMetricsContribution(tableInfo.TableId, followerId));
+
+        const TDetailedMetricsTableInfo table{
+            .TableId = tableInfo.TableId,
+            .TablePath = tableInfo.TablePath,
+            .SchemaVersion = tableInfo.SchemaVersion,
+            .MetricsLevel = *level,
+        };
+
+        db.Aggregator->AddCounters(table, tabletId, followerId, tabletType,
+            *executorCounters, *appCounters, ctx.Now());
+    }
+
+    /**
+     * Handle the resolved path of a database, creating the detailed metrics aggregator
+     * of the database.
+     */
+    void ResolveDatabasePath(NSchemeCache::TSchemeCacheNavigate* navigate, const TActorContext& ctx) {
+        for (const auto& entry : navigate->ResultSet) {
+            const auto pathId = entry.TableId.PathId;
+
+            auto it = DetailedMetricsByPathId.find(pathId);
+            if (it == DetailedMetricsByPathId.end()) {
+                continue;
+            }
+
+            auto& db = it->second;
+
+            // Let the next round of the counters request the path again
+            db.DatabasePathRequested = false;
+
+            if (entry.Status != NSchemeCache::TSchemeCacheNavigate::EStatus::Ok) {
+                YDB_LOG_WARN_CTX(ctx, "Failed to resolve the database path of the detailed metrics",
+                    {"pathId", pathId.ToString()},
+                    {"status", static_cast<ui32>(entry.Status)});
+                continue;
+            }
+
+            db.DatabasePath = CanonizePath(entry.Path);
+            CreateDetailedMetricsAggregator(db);
         }
     }
 
@@ -190,6 +364,8 @@ public:
         if (auto itPath = CountersByPathId.find(tenantPathId); itPath != CountersByPathId.end()) {
             itPath->second->Forget(tabletId, tabletType);
         }
+        // from the detailed metrics of the database
+        ForgetTabletDetailedMetrics(tabletId, tenantPathId);
 
         for (auto iter = LabeledDbCounters.begin(); iter != LabeledDbCounters.end(); ++iter) {
             iter->second->ForgetTablet(tabletId);
@@ -322,6 +498,12 @@ public:
             counters->RecalcAll();
         }
 
+        for (auto& [_, db] : DetailedMetricsByPathId) {
+            if (db.Aggregator) {
+                db.Aggregator->RecalculateAllCounters();
+            }
+        }
+
         if (YdbCounters) {
             auto hasSchemeshard = (bool)FindCountersByTabletType(
                 TTabletTypes::SchemeShard, CountersByTabletType);
@@ -333,6 +515,7 @@ public:
 
     void RemoveTabletsByPathId(TPathId pathId) {
         CountersByPathId.erase(pathId);
+        RemoveDetailedMetricsByPathId(pathId);
     }
 
     void RemoveTabletsByDbPath(const TString& dbPath) {
@@ -892,6 +1075,146 @@ private:
     }
 
 private:
+    ////////////////////////////////////////////
+    // Detailed metrics
+
+    /**
+     * A single tablet (a leader or a follower) of a table, whose counters this actor
+     * reports to the detailed metrics of the table.
+     */
+    using TDetailedMetricsContribution = std::pair<TPathId, ui32>;
+
+    /**
+     * Everything this actor keeps for the detailed metrics of a single database.
+     */
+    struct TDetailedMetricsForDb {
+        /**
+         * The full path of the database (the "database" label). Empty until the path
+         * is resolved through the scheme cache.
+         */
+        TString DatabasePath;
+
+        /**
+         * The monitoring project of the database, as reported by its tablets.
+         */
+        TString MonitoringProjectId;
+
+        bool DatabasePathRequested = false;
+
+        /**
+         * Created as soon as the path of the database is resolved.
+         */
+        TNodeDatabaseMetricsAggregatorPtr Aggregator;
+
+        /**
+         * The tables and the roles, which every tablet reports to. The forget event
+         * carries neither the table nor the follower id, so the contributions of
+         * a tablet have to be remembered here to be able to drop them.
+         */
+        THashMap<ui64, THashSet<TDetailedMetricsContribution>> TabletContributions;
+    };
+
+    /**
+     * Resolve the path of the database, which is the value of the "database" label
+     * of its detailed metrics.
+     *
+     * @note Only one request is in flight at a time; the next round of the counters
+     *       requests the path again if this one fails.
+     */
+    void RequestDatabasePath(TPathId tenantPathId, TDetailedMetricsForDb& db, const TActorContext& ctx) {
+        if (db.DatabasePathRequested) {
+            return;
+        }
+        db.DatabasePathRequested = true;
+
+        using TNavigate = NSchemeCache::TSchemeCacheNavigate;
+        auto request = MakeHolder<TNavigate>();
+
+        // GetDomain() aborts when there is no domain at all, which is the case in some
+        // of the unit test runtimes
+        if (const auto& domain = AppData(ctx)->DomainsInfo->Domain) {
+            request->DatabaseName = domain->Name;
+        }
+
+        request->ResultSet.push_back({});
+
+        auto& entry = request->ResultSet.back();
+        entry.TableId.PathId = tenantPathId;
+        entry.Operation = TNavigate::EOp::OpPath;
+        entry.RequestType = TNavigate::TEntry::ERequestType::ByTableId;
+        entry.RedirectRequired = false;
+
+        ctx.Send(MakeSchemeCacheID(), new TEvTxProxySchemeCache::TEvNavigateKeySet(request.Release()));
+    }
+
+    void CreateDetailedMetricsAggregator(TDetailedMetricsForDb& db) {
+        db.Aggregator = CreateNodeDatabaseMetricsAggregator(
+            GetDetailedMetricsRawGroup(CountersRoot),
+            db.DatabasePath,
+            db.MonitoringProjectId
+        );
+    }
+
+    /**
+     * Drop everything, which this actor has reported to the detailed metrics of
+     * the database, keeping the resolved path of the database.
+     *
+     * @note The counter groups of the other role actor of this node are NOT touched:
+     *       it owns its own aggregator over the very same counter tree.
+     */
+    void ResetDetailedMetricsAggregator(TDetailedMetricsForDb& db) {
+        if (!db.Aggregator) {
+            return;
+        }
+
+        for (const auto& [tabletId, contributions] : db.TabletContributions) {
+            for (const auto& [tableId, followerId] : contributions) {
+                db.Aggregator->ForgetTablet(tableId, tabletId, followerId);
+            }
+        }
+
+        db.TabletContributions.clear();
+        db.Aggregator = nullptr;
+    }
+
+    /**
+     * Drop the counters, which the tablet has reported to the detailed metrics of
+     * the database.
+     */
+    void ForgetTabletDetailedMetrics(ui64 tabletId, TPathId tenantPathId) {
+        auto itDb = DetailedMetricsByPathId.find(tenantPathId);
+        if (itDb == DetailedMetricsByPathId.end()) {
+            return;
+        }
+
+        auto& db = itDb->second;
+
+        auto itTablet = db.TabletContributions.find(tabletId);
+        if (itTablet == db.TabletContributions.end()) {
+            return;
+        }
+
+        if (db.Aggregator) {
+            for (const auto& [tableId, followerId] : itTablet->second) {
+                db.Aggregator->ForgetTablet(tableId, tabletId, followerId);
+            }
+        }
+
+        db.TabletContributions.erase(itTablet);
+    }
+
+    void RemoveDetailedMetricsByPathId(TPathId pathId) {
+        auto it = DetailedMetricsByPathId.find(pathId);
+        if (it == DetailedMetricsByPathId.end()) {
+            return;
+        }
+
+        ResetDetailedMetricsAggregator(it->second);
+        DetailedMetricsByPathId.erase(it);
+    }
+
+private:
+    ::NMonitoring::TDynamicCounterPtr CountersRoot;
     ::NMonitoring::TDynamicCounterPtr Counters;
     TTabletCountersForTabletTypePtr AllTypes;
     bool IsFollower = false;
@@ -905,6 +1228,10 @@ private:
     TCountersByTabletType CountersByTabletType;
     TCountersByPathId CountersByPathId;
     TActorId DbWatcherActorId;
+
+    bool DetailedMetricsEnabled = false;
+    THashMap<TPathId, TDetailedMetricsForDb> DetailedMetricsByPathId;
+
     TAppCountersByTabletType LimitedAppCounters; // without txs
     TYdbTabletCountersPtr YdbCounters;
     TLabeledCountersByDbPath LabeledDbCounters;
@@ -949,6 +1276,7 @@ private:
     void HandleWork(TEvTabletCounters::TEvTabletAddLabeledCounters::TPtr &ev, const TActorContext &ctx);
     void HandleWork(TEvTabletCounters::TEvTabletLabeledCountersRequest::TPtr &ev, const TActorContext &ctx);
     void HandleWork(TEvTabletCounters::TEvTabletLabeledCountersResponse::TPtr &ev, const TActorContext &ctx);//from cluster aggregator
+    void HandleWork(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr &ev, const TActorContext &ctx);
     void HandleWork(NMon::TEvHttpInfo::TPtr& ev, const TActorContext &ctx);
     void HandleWakeup(const TActorContext &ctx);
     void HandleWork(TEvTabletCounters::TEvRemoveDatabase::TPtr& ev);
@@ -987,7 +1315,8 @@ TTabletCountersAggregatorActor::Bootstrap(const TActorContext &ctx) {
         DbWatcherActorId = ctx.Register(NSysView::CreateDbWatcherActor(callback));
     }
 
-    TabletMon = new TTabletMon(appData->Counters, Follower, DbWatcherActorId);
+    TabletMon = new TTabletMon(appData->Counters, Follower, DbWatcherActorId,
+        appData->FeatureFlags.GetEnableDataShardDetailedMetrics());
     auto mon = appData->Mon;
     if (mon) {
         if (!Follower)
@@ -1011,6 +1340,17 @@ TTabletCountersAggregatorActor::HandleWork(TEvTabletCounters::TEvTabletAddCounte
     Y_UNUSED(ctx);
     TEvTabletCounters::TEvTabletAddCounters* msg = ev->Get();
     TabletMon->Apply(msg->TabletID, msg->TabletType, msg->TenantPathId, msg->ExecutorCounters.Get(), msg->AppCounters.Get(), ctx);
+
+    if (msg->TableInfo) {
+        TabletMon->ApplyDetailedMetrics(msg->TabletID, msg->FollowerId, msg->TabletType,
+            msg->TenantPathId, *msg->TableInfo, msg->ExecutorCounters.Get(), msg->AppCounters.Get(), ctx);
+    }
+}
+
+////////////////////////////////////////////
+void
+TTabletCountersAggregatorActor::HandleWork(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr &ev, const TActorContext &ctx) {
+    TabletMon->ResolveDatabasePath(ev->Get()->Request.Get(), ctx);
 }
 
 ////////////////////////////////////////////
@@ -1309,6 +1649,7 @@ STFUNC(TTabletCountersAggregatorActor::StateWork) {
         HFunc(TEvTabletCounters::TEvTabletAddLabeledCounters, HandleWork);
         HFunc(TEvTabletCounters::TEvTabletLabeledCountersRequest, HandleWork);
         HFunc(TEvTabletCounters::TEvTabletLabeledCountersResponse, HandleWork); //from cluster aggregator, for http requests
+        HFunc(TEvTxProxySchemeCache::TEvNavigateKeySetResult, HandleWork);
         hFunc(TEvTabletCounters::TEvRemoveDatabase, HandleWork);
         HFunc(NMon::TEvHttpInfo, HandleWork);
         CFunc(TEvents::TSystem::Wakeup, HandleWakeup);
