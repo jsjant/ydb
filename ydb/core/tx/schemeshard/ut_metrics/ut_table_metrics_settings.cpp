@@ -1002,8 +1002,10 @@ Y_UNIT_TEST_SUITE(TSchemeShardDatabaseDetailedMetricsSettingsTest) {
             {NKikimrScheme::StatusInvalidParameter});
     }
 
-    // The root database has no SysView Processor, so detailed metrics can never be
-    // aggregated for it
+    // The root database has no SysView Processor, so it can never produce detailed
+    // metrics, and TTxInit does not restore the root domain from its SubDomains
+    // row. TABLES_METRICS_LEVEL is therefore rejected there for every value,
+    // including the ones that mean "off": there is nothing to turn off or clear.
     void VerifyAlterRootDatabaseTablesMetricsLevelRejected(
         NKikimrSchemeOp::TTableDetailedMetricsSettings::EMetricsLevel level
     ) {
@@ -1067,5 +1069,109 @@ Y_UNIT_TEST_SUITE(TSchemeShardDatabaseDetailedMetricsSettingsTest) {
 
         UNIT_ASSERT_VALUES_EQUAL(GetPublishedTablesMetricsLevel(runtime, "/MyRoot/USER_0"),
             ui32(NKikimrSchemeOp::TTableDetailedMetricsSettings::MetricsLevelTable));
+    }
+}
+
+/**
+ * Unit test for the logic in Scheme Shard, which configures the database
+ * attribute monitoring_project_id and publishes it in the subdomain
+ * description, where DataShard picks it up.
+ */
+Y_UNIT_TEST_SUITE(TSchemeShardDatabaseMonitoringProjectIdTest) {
+    constexpr const char* SubDomainSettings =
+        "PlanResolution: 50 "
+        "Coordinators: 1 "
+        "Mediators: 1 "
+        "TimeCastBucketsPerMediator: 2 "
+        "Name: \"USER_0\" ";
+
+    TString GetPublishedMonitoringProjectId(TTestBasicRuntime& runtime, const TString& path) {
+        const auto describeResult = DescribePath(runtime, path);
+        UNIT_ASSERT(describeResult.GetPathDescription().HasDomainDescription());
+        return describeResult.GetPathDescription().GetDomainDescription().GetMonitoringProjectId();
+    }
+
+    Y_UNIT_TEST(AlterDatabaseMonitoringProjectId) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        ui64 txId = 100;
+
+        TestCreateSubDomain(runtime, ++txId, "/MyRoot", SubDomainSettings);
+        env.TestWaitNotification(runtime, txId);
+
+        // No project id configured yet
+        UNIT_ASSERT_VALUES_EQUAL(GetPublishedMonitoringProjectId(runtime, "/MyRoot/USER_0"), "");
+
+        TestAlterSubDomain(runtime, ++txId, "/MyRoot",
+            Sprintf("%sMonitoringProjectId: \"proj1\"", SubDomainSettings));
+        env.TestWaitNotification(runtime, txId);
+
+        UNIT_ASSERT_VALUES_EQUAL(GetPublishedMonitoringProjectId(runtime, "/MyRoot/USER_0"), "proj1");
+
+        // Persisted, so it survives a Scheme Shard restart
+        RebootTablet(runtime, TTestTxConfig::SchemeShard, runtime.AllocateEdgeActor());
+
+        UNIT_ASSERT_VALUES_EQUAL(GetPublishedMonitoringProjectId(runtime, "/MyRoot/USER_0"), "proj1");
+
+        // An ALTER that says nothing about the project id keeps the current one
+        TestAlterSubDomain(runtime, ++txId, "/MyRoot", SubDomainSettings);
+        env.TestWaitNotification(runtime, txId);
+
+        UNIT_ASSERT_VALUES_EQUAL(GetPublishedMonitoringProjectId(runtime, "/MyRoot/USER_0"), "proj1");
+
+        // Changing it to another value overwrites the current one
+        TestAlterSubDomain(runtime, ++txId, "/MyRoot",
+            Sprintf("%sMonitoringProjectId: \"proj2\"", SubDomainSettings));
+        env.TestWaitNotification(runtime, txId);
+
+        UNIT_ASSERT_VALUES_EQUAL(GetPublishedMonitoringProjectId(runtime, "/MyRoot/USER_0"), "proj2");
+    }
+
+    Y_UNIT_TEST(AlterDatabaseMonitoringProjectIdEmptyRejected) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        ui64 txId = 100;
+
+        TestCreateSubDomain(runtime, ++txId, "/MyRoot", SubDomainSettings);
+        env.TestWaitNotification(runtime, txId);
+
+        TestAlterSubDomain(runtime, ++txId, "/MyRoot",
+            Sprintf("%sMonitoringProjectId: \"\"", SubDomainSettings),
+            {NKikimrScheme::StatusInvalidParameter});
+    }
+
+    // The root database has no SysView Processor, so it can never produce detailed
+    // metrics, and TTxInit does not restore the root domain from its SubDomains
+    // row. monitoring_project_id is therefore rejected there outright.
+    Y_UNIT_TEST(AlterRootDatabaseMonitoringProjectIdNotAllowed) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        ui64 txId = 100;
+
+        // So that the request is rejected by the root-database check, not by the
+        // ALTER DATABASE gate
+        runtime.GetAppData().FeatureFlags.SetEnableAlterDatabase(true);
+
+        TestAlterSubDomain(runtime, ++txId, "/",
+            "Name: \"MyRoot\" MonitoringProjectId: \"proj1\"",
+            {NKikimrScheme::StatusInvalidParameter});
+
+        UNIT_ASSERT_VALUES_EQUAL(GetPublishedMonitoringProjectId(runtime, "/MyRoot"), "");
+
+        RebootTablet(runtime, TTestTxConfig::SchemeShard, runtime.AllocateEdgeActor());
+
+        UNIT_ASSERT_VALUES_EQUAL(GetPublishedMonitoringProjectId(runtime, "/MyRoot"), "");
+    }
+
+    Y_UNIT_TEST(CreateDatabaseWithMonitoringProjectId) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        ui64 txId = 100;
+
+        TestCreateSubDomain(runtime, ++txId, "/MyRoot",
+            Sprintf("%sMonitoringProjectId: \"proj1\"", SubDomainSettings));
+        env.TestWaitNotification(runtime, txId);
+
+        UNIT_ASSERT_VALUES_EQUAL(GetPublishedMonitoringProjectId(runtime, "/MyRoot/USER_0"), "proj1");
     }
 }
