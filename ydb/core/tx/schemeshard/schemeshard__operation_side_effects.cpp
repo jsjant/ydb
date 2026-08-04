@@ -511,6 +511,9 @@ void TSideEffects::DoUpdateTenant(TSchemeShard* ss, NTabletFlatExecutor::TTransa
                 message->Record.SetServerlessComputeResourcesMode(*serverlessComputeResourcesMode);
             }
             message->Record.SetTablesMetricsLevel(subDomain->GetTablesMetricsLevel());
+            if (const TString& monitoringProjectId = subDomain->GetMonitoringProjectId(); !monitoringProjectId.empty()) {
+                message->Record.SetMonitoringProjectId(monitoringProjectId);
+            }
             hasChanges = true;
         }
 

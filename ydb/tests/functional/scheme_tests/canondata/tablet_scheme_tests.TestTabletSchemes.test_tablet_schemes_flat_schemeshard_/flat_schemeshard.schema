@@ -1586,6 +1586,11 @@
                 "ColumnId": 34,
                 "ColumnName": "TablesMetricsLevel",
                 "ColumnType": "Uint32"
+            },
+            {
+                "ColumnId": 35,
+                "ColumnName": "MonitoringProjectId",
+                "ColumnType": "Utf8"
             }
         ],
         "ColumnsDropped": [],
@@ -1625,7 +1630,8 @@
                     31,
                     32,
                     33,
-                    34
+                    34,
+                    35
                 ],
                 "RoomID": 0,
                 "Codec": 0,
@@ -2483,6 +2489,11 @@
                 "ColumnId": 30,
                 "ColumnName": "TablesMetricsLevel",
                 "ColumnType": "Uint32"
+            },
+            {
+                "ColumnId": 31,
+                "ColumnName": "MonitoringProjectId",
+                "ColumnType": "Utf8"
             }
         ],
         "ColumnsDropped": [],
@@ -2518,7 +2529,8 @@
                     27,
                     28,
                     29,
-                    30
+                    30,
+                    31
                 ],
                 "RoomID": 0,
                 "Codec": 0,

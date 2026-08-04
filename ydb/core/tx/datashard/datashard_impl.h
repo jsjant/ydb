@@ -326,7 +326,7 @@ class TDataShard
 
     class TTxPersistSubDomainPathId;
     class TTxPersistSubDomainOutOfSpace;
-    class TTxPersistSubDomainTablesMetricsLevel;
+    class TTxPersistSubDomainDetailedMetricsSettings;
 
     class TTxRequestChangeRecords;
     class TTxRemoveChangeRecords;
@@ -1229,6 +1229,7 @@ class TDataShard
             Sys_VacuumCompletedGeneration = 47,
 
             Sys_SubDomainTablesMetricsLevel = 48,
+            Sys_SubDomainMonitoringProjectId = 49,
 
             // reserved
             SysPipeline_Flags = 1000,
@@ -1244,6 +1245,7 @@ class TDataShard
         static_assert(ESysTableKeys::SysMvcc_ImmediateWriteEdgeTxId == 40, "SysMvcc_ImmediateWriteEdgeTxId changed its value");
         static_assert(ESysTableKeys::Sys_LastLoanTableTid == 41, "Sys_LastLoanTableTid changed its value");
         static_assert(ESysTableKeys::Sys_SubDomainTablesMetricsLevel == 48, "Sys_SubDomainTablesMetricsLevel changed its value");
+        static_assert(ESysTableKeys::Sys_SubDomainMonitoringProjectId == 49, "Sys_SubDomainMonitoringProjectId changed its value");
 
         static constexpr ui64 MinLocalTid = TSysTables::SysTableMAX + 1; // 1000
 
@@ -2017,6 +2019,11 @@ public:
     NKikimrSchemeOp::TTableDetailedMetricsSettings::EMetricsLevel GetSubDomainTablesMetricsLevel() const
     {
         return SubDomainTablesMetricsLevel;
+    }
+
+    const TString& GetSubDomainMonitoringProjectId() const
+    {
+        return SubDomainMonitoringProjectId;
     }
 
     NKikimrSchemeOp::TTableDetailedMetricsSettings::EMetricsLevel GetEffectiveMetricsLevel(const TUserTable& table) const
@@ -2859,6 +2866,7 @@ private:
     bool SubDomainOutOfSpace = false;
     NKikimrSchemeOp::TTableDetailedMetricsSettings::EMetricsLevel SubDomainTablesMetricsLevel =
         NKikimrSchemeOp::TTableDetailedMetricsSettings::MetricsLevelUnspecified;
+    TString SubDomainMonitoringProjectId;
 
     THashSet<TActorId> Actors;
     TLoanReturnTracker LoanReturnTracker;

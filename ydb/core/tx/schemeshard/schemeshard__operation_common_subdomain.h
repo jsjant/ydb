@@ -46,6 +46,14 @@ inline bool CheckStoragePoolsInQuotas(
     return true;
 }
 
+inline bool CheckDetailedMetricsSettingsAllowedOnDatabase(bool isRootDomain, TStringBuf setting, TString& error) {
+    if (isRootDomain) {
+        error = TStringBuilder() << setting << " cannot be set on the root database";
+        return false;
+    }
+    return true;
+}
+
 // Validates the database-wide default detailed metrics level
 // (TABLES_METRICS_LEVEL) coming in with a (ext)subdomain create/alter request.
 // MetricsLevelUnspecified is accepted: at the database level it means "no
@@ -56,8 +64,7 @@ inline bool CheckTablesMetricsLevel(ETablesMetricsLevel level, bool isRootDomain
         return false;
     }
 
-    if (isRootDomain) {
-        error = "TABLES_METRICS_LEVEL cannot be set on the root database";
+    if (!CheckDetailedMetricsSettingsAllowedOnDatabase(isRootDomain, "TABLES_METRICS_LEVEL", error)) {
         return false;
     }
 
@@ -71,6 +78,19 @@ inline bool CheckTablesMetricsLevel(ETablesMetricsLevel level, bool isRootDomain
         error = TStringBuilder() << "Unknown TABLES_METRICS_LEVEL: " << static_cast<ui32>(level);
         return false;
     }
+}
+
+// Validates monitoring_project_id coming in with a (ext)subdomain
+// create/alter request. It's a plain label value: the only requirement here
+// is that an explicit request doesn't clear it to an empty string. Whether it
+// must be set at all (before detailed metrics can be enabled) is enforced
+// elsewhere, not here.
+inline bool CheckMonitoringProjectId(const TString& monitoringProjectId, bool isRootDomain, TString& error) {
+    if (monitoringProjectId.empty()) {
+        error = "monitoring_project_id cannot be set to an empty string";
+        return false;
+    }
+    return CheckDetailedMetricsSettingsAllowedOnDatabase(isRootDomain, "monitoring_project_id", error);
 }
 
 namespace NSubDomainState {

@@ -308,15 +308,24 @@ public:
             alterData->ApplyAuditSettings(settings.GetAuditSettings());
         }
 
+        const bool isRootDomain = subDomain->IsRoot() && context.SS->IsDomainSchemeShard;
+
         // alterData is copy-constructed from subDomainInfo, so the current
         // level is already carried over; only an explicit request changes it.
         if (settings.HasTablesMetricsLevel()) {
-            const bool isRootDomain = subDomain->IsRoot() && context.SS->IsDomainSchemeShard;
             if (!CheckTablesMetricsLevel(settings.GetTablesMetricsLevel(), isRootDomain, errStr)) {
                 result->SetError(NKikimrScheme::StatusInvalidParameter, errStr);
                 return result;
             }
             alterData->SetTablesMetricsLevel(settings.GetTablesMetricsLevel());
+        }
+
+        if (settings.HasMonitoringProjectId()) {
+            if (!CheckMonitoringProjectId(settings.GetMonitoringProjectId(), isRootDomain, errStr)) {
+                result->SetError(NKikimrScheme::StatusInvalidParameter, errStr);
+                return result;
+            }
+            alterData->SetMonitoringProjectId(settings.GetMonitoringProjectId());
         }
 
         NIceDb::TNiceDb db(context.GetDB());

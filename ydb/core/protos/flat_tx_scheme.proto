@@ -235,6 +235,7 @@ message TEvInitTenantSchemeShard {
     optional NKikimrSubDomains.EServerlessComputeResourcesMode ServerlessComputeResourcesMode = 19;
 
     optional NKikimrSchemeOp.TTableDetailedMetricsSettings.EMetricsLevel TablesMetricsLevel = 20;
+    optional string MonitoringProjectId = 21;
 }
 
 message TEvInitTenantSchemeShardResult {
@@ -416,6 +417,7 @@ message TEvUpdateTenantSchemeShard {
     optional NKikimrSubDomains.EServerlessComputeResourcesMode ServerlessComputeResourcesMode = 17;
 
     optional NKikimrSchemeOp.TTableDetailedMetricsSettings.EMetricsLevel TablesMetricsLevel = 21;
+    optional string MonitoringProjectId = 22;
 }
 
 message TEvFindTabletSubDomainPathId {

@@ -1008,6 +1008,10 @@ void TPathDescriber::DescribeDomainRoot(TPathElement::TPtr pathEl) {
 
     entry->SetTablesMetricsLevel(subDomainInfo->GetTablesMetricsLevel());
 
+    if (const TString& monitoringProjectId = subDomainInfo->GetMonitoringProjectId(); !monitoringProjectId.empty()) {
+        entry->SetMonitoringProjectId(monitoringProjectId);
+    }
+
     if (const auto& serverlessComputeResourcesMode = subDomainInfo->GetServerlessComputeResourcesMode()) {
         entry->SetServerlessComputeResourcesMode(*serverlessComputeResourcesMode);
     }

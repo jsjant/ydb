@@ -57,6 +57,7 @@ message TSubDomainSettings {
     optional bool ExternalBackupController = 17 [default = false];
 
     optional NKikimrSchemeOp.TTableDetailedMetricsSettings.EMetricsLevel TablesMetricsLevel = 19;
+    optional string MonitoringProjectId = 20;
 }
 
 message TProcessingParams {
@@ -149,6 +150,7 @@ message TDomainDescription {
     optional TAuditSettings AuditSettings = 21;
 
     optional NKikimrSchemeOp.TTableDetailedMetricsSettings.EMetricsLevel TablesMetricsLevel = 26;
+    optional string MonitoringProjectId = 27;
 }
 
 message TSchemeQuotas {

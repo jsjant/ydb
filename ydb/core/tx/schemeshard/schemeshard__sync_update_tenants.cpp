@@ -133,6 +133,11 @@ struct TSchemeShard::TTxUpdateTenant : public TSchemeShard::TRwTxBase {
                 Self->PersistSubDomainTablesMetricsLevel(db, Self->RootPathId(), *subdomain);
             }
 
+            if (record.HasMonitoringProjectId()) {
+                subdomain->SetMonitoringProjectId(record.GetMonitoringProjectId());
+                Self->PersistSubDomainMonitoringProjectId(db, Self->RootPathId(), *subdomain);
+            }
+
             Self->PersistStoragePools(db, Self->RootPathId(), *subdomain);
             SideEffects.PublishToSchemeBoard(InvalidOperationId, Self->RootPathId());
             MakeSync();

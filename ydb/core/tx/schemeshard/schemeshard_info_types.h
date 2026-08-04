@@ -2763,6 +2763,14 @@ struct TSubDomainInfo: TSimpleRefCount<TSubDomainInfo> {
         TablesMetricsLevel = level;
     }
 
+    const TString& GetMonitoringProjectId() const {
+        return MonitoringProjectId;
+    }
+
+    void SetMonitoringProjectId(const TString& monitoringProjectId) {
+        MonitoringProjectId = monitoringProjectId;
+    }
+
 private:
     bool InitiatedAsGlobal = false;
     NKikimrSubDomains::TProcessingParams ProcessingParams;
@@ -2810,6 +2818,7 @@ private:
     TMaybeAuditSettings AuditSettings;
 
     ETablesMetricsLevel TablesMetricsLevel = NKikimrSchemeOp::TTableDetailedMetricsSettings::MetricsLevelUnspecified;
+    TString MonitoringProjectId;
 
     TVector<TTabletId> FilterPrivateTablets(TTabletTypes::EType type, const THashMap<TShardIdx, TShardInfo>& allShards) const {
         TVector<TTabletId> tablets;

@@ -317,6 +317,14 @@ public:
             alter->SetTablesMetricsLevel(settings.GetTablesMetricsLevel());
         }
 
+        if (settings.HasMonitoringProjectId()) {
+            if (!CheckMonitoringProjectId(settings.GetMonitoringProjectId(), /* isRootDomain */ false, errStr)) {
+                result->SetError(NKikimrScheme::StatusInvalidParameter, errStr);
+                return result;
+            }
+            alter->SetMonitoringProjectId(settings.GetMonitoringProjectId());
+        }
+
         Y_ABORT_UNLESS(!context.SS->SubDomains.contains(newNode->PathId));
         auto& subDomainInfo = context.SS->SubDomains[newNode->PathId];
         subDomainInfo = new TSubDomainInfo();

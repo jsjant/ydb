@@ -242,6 +242,9 @@ bool TConfigureParts::ProgressState(TOperationContext& context) {
                 event->Record.SetServerlessComputeResourcesMode(*alterData->GetServerlessComputeResourcesMode());
             }
             event->Record.SetTablesMetricsLevel(alterData->GetTablesMetricsLevel());
+            if (const TString& monitoringProjectId = alterData->GetMonitoringProjectId(); !monitoringProjectId.empty()) {
+                event->Record.SetMonitoringProjectId(monitoringProjectId);
+            }
             LOG_DEBUG_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
                         "Send configure request to schemeshard: " << tabletID <<
                             " opId: " << OperationId <<

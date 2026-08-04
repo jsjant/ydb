@@ -842,6 +842,7 @@ struct Schema : NIceDb::Schema {
         struct ColumnTableColumnsLimit : Column<32, NScheme::NTypeIds::Uint64> {};
         struct SmallBlobsQuotaExceeded : Column<33, NScheme::NTypeIds::Bool> {};
         struct TablesMetricsLevel : Column<34, NScheme::NTypeIds::Uint32> { using Type = ETablesMetricsLevel; };
+        struct MonitoringProjectId : Column<35, NScheme::NTypeIds::Utf8> {};
 
         using TKey = TableKey<PathId>;
         using TColumns = TableColumns<
@@ -878,7 +879,8 @@ struct Schema : NIceDb::Schema {
             ServerlessComputeResourcesMode,
             ColumnTableColumnsLimit,
             SmallBlobsQuotaExceeded,
-            TablesMetricsLevel
+            TablesMetricsLevel,
+            MonitoringProjectId
         >;
     };
 
@@ -922,6 +924,7 @@ struct Schema : NIceDb::Schema {
         struct ImportsLimit : Column<28, NScheme::NTypeIds::Uint64> {};
         struct ColumnTableColumnsLimit : Column<29, NScheme::NTypeIds::Uint64> {};
         struct TablesMetricsLevel : Column<30, NScheme::NTypeIds::Uint32> { using Type = ETablesMetricsLevel; };
+        struct MonitoringProjectId : Column<31, NScheme::NTypeIds::Utf8> {};
 
         using TKey = TableKey<PathId>;
         using TColumns = TableColumns<
@@ -954,7 +957,8 @@ struct Schema : NIceDb::Schema {
             ExportsLimit,
             ImportsLimit,
             ColumnTableColumnsLimit,
-            TablesMetricsLevel
+            TablesMetricsLevel,
+            MonitoringProjectId
         >;
     };
 

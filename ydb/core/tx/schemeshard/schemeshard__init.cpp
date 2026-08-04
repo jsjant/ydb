@@ -1717,6 +1717,10 @@ struct TSchemeShard::TTxInit : public TTransactionBase<TSchemeShard> {
                             NKikimrSchemeOp::TTableDetailedMetricsSettings::MetricsLevelUnspecified
                         )
                     );
+
+                    domainInfo->SetMonitoringProjectId(
+                        rowset.GetValueOrDefault<Schema::SubDomains::MonitoringProjectId>(TString())
+                    );
                 }
 
                 if (!rowset.Next())
@@ -1794,6 +1798,12 @@ struct TSchemeShard::TTxInit : public TTransactionBase<TSchemeShard> {
                         alter->SetTablesMetricsLevel(
                             rowset.GetValueOrDefault<Schema::SubDomainsAlterData::TablesMetricsLevel>(
                                 subdomainInfo->GetTablesMetricsLevel()
+                            )
+                        );
+
+                        alter->SetMonitoringProjectId(
+                            rowset.GetValueOrDefault<Schema::SubDomainsAlterData::MonitoringProjectId>(
+                                subdomainInfo->GetMonitoringProjectId()
                             )
                         );
                     }

@@ -419,6 +419,10 @@ struct TSchemeShard::TTxInitTenantSchemeShard : public TSchemeShard::TRwTxBase {
             subdomain->SetTablesMetricsLevel(record.GetTablesMetricsLevel());
         }
 
+        if (record.HasMonitoringProjectId()) {
+            subdomain->SetMonitoringProjectId(record.GetMonitoringProjectId());
+        }
+
         RegisterShard(db, subdomain, processingParams.GetCoordinators(), TTabletTypes::Coordinator);
         RegisterShard(db, subdomain, processingParams.GetMediators(), TTabletTypes::Mediator);
         RegisterShard(db, subdomain, TVector<ui64>{processingParams.GetSchemeShard()}, TTabletTypes::SchemeShard);

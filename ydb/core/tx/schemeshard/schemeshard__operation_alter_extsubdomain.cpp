@@ -325,6 +325,13 @@ VerifyParams(TParamsDelta* delta, const TPathId pathId, const TSubDomainInfo::TP
         }
     }
 
+    if (input.HasMonitoringProjectId()) {
+        TString error;
+        if (!CheckMonitoringProjectId(input.GetMonitoringProjectId(), /* isRootDomain */ false, error)) {
+            return paramError(error);
+        }
+    }
+
     delta->CoordinatorsAdded = coordinatorsAdded;
     delta->MediatorsAdded = mediatorsAdded;
     delta->TimeCastBucketsPerMediatorAdded = timeCastBucketsPerMediatorAdded;
@@ -964,6 +971,13 @@ public:
         // changes it (already validated in VerifyParams).
         if (inputSettings.HasTablesMetricsLevel()) {
             alter->SetTablesMetricsLevel(inputSettings.GetTablesMetricsLevel());
+        }
+
+        // alter is copy-constructed from the current subdomain info, so the
+        // current value is already carried over; only an explicit request
+        // changes it (already validated in VerifyParams).
+        if (inputSettings.HasMonitoringProjectId()) {
+            alter->SetMonitoringProjectId(inputSettings.GetMonitoringProjectId());
         }
 
         LOG_D("TAlterExtSubDomain Propose"

@@ -2563,6 +2563,7 @@ void TSchemeShard::PersistSubDomainAlter(NIceDb::TNiceDb& db, const TPathId& pat
     PersistSubDomainAuditSettingsAlter(db, pathId, subDomain);
     PersistSubDomainServerlessComputeResourcesModeAlter(db, pathId, subDomain);
     PersistSubDomainTablesMetricsLevelAlter(db, pathId, subDomain);
+    PersistSubDomainMonitoringProjectIdAlter(db, pathId, subDomain);
 
     for (auto shardIdx: subDomain.GetPrivateShards()) {
         db.Table<Schema::SubDomainShardsAlterData>().Key(pathId.LocalPathId, shardIdx.GetLocalId()).Update();
@@ -2634,6 +2635,7 @@ void TSchemeShard::PersistSubDomain(NIceDb::TNiceDb& db, const TPathId& pathId, 
     PersistSubDomainAuditSettings(db, pathId, subDomain);
     PersistSubDomainServerlessComputeResourcesMode(db, pathId, subDomain);
     PersistSubDomainTablesMetricsLevel(db, pathId, subDomain);
+    PersistSubDomainMonitoringProjectId(db, pathId, subDomain);
 
     db.Table<Schema::SubDomainsAlterData>().Key(pathId.LocalPathId).Delete();
 
@@ -2797,6 +2799,22 @@ void TSchemeShard::PersistSubDomainTablesMetricsLevel(NIceDb::TNiceDb& db, const
 void TSchemeShard::PersistSubDomainTablesMetricsLevelAlter(NIceDb::TNiceDb& db, const TPathId& pathId,
                                                            const TSubDomainInfo& subDomain) {
     PersistSubDomainTablesMetricsLevelImpl<Schema::SubDomainsAlterData>(db, pathId, subDomain.GetTablesMetricsLevel());
+}
+
+template <class Table>
+void PersistSubDomainMonitoringProjectIdImpl(NIceDb::TNiceDb& db, const TPathId& pathId, const TString& value) {
+    using Field = typename Table::MonitoringProjectId;
+    db.Table<Table>().Key(pathId.LocalPathId).Update(NIceDb::TUpdate<Field>(value));
+}
+
+void TSchemeShard::PersistSubDomainMonitoringProjectId(NIceDb::TNiceDb& db, const TPathId& pathId,
+                                                       const TSubDomainInfo& subDomain) {
+    PersistSubDomainMonitoringProjectIdImpl<Schema::SubDomains>(db, pathId, subDomain.GetMonitoringProjectId());
+}
+
+void TSchemeShard::PersistSubDomainMonitoringProjectIdAlter(NIceDb::TNiceDb& db, const TPathId& pathId,
+                                                            const TSubDomainInfo& subDomain) {
+    PersistSubDomainMonitoringProjectIdImpl<Schema::SubDomainsAlterData>(db, pathId, subDomain.GetMonitoringProjectId());
 }
 
 void TSchemeShard::PersistACL(NIceDb::TNiceDb& db, const TPathElement::TPtr path) {
