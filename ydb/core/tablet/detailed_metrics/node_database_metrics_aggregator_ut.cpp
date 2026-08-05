@@ -5,6 +5,7 @@
 #include <library/cpp/testing/unittest/registar.h>
 
 #include <util/generic/array_size.h>
+#include <util/string/builder.h>
 #include <util/string/cast.h>
 
 using namespace NKikimr;
@@ -278,6 +279,34 @@ ui64 GetHistogramTotal(NMonitoring::TDynamicCounterPtr countersGroup, const TStr
     return total;
 }
 
+/**
+ * @param[in] countersGroup The counter group to read the histogram from
+ * @param[in] name The name of the histogram
+ *
+ * @return The value of every bucket of the histogram, comma separated
+ *
+ * @note A string rather than a vector, so that a failed assertion prints
+ *       both the expected and the actual buckets.
+ */
+TString GetHistogramBuckets(NMonitoring::TDynamicCounterPtr countersGroup, const TString& name) {
+    UNIT_ASSERT_C(countersGroup, "no counter group for the histogram " << name);
+
+    auto histogram = countersGroup->FindHistogram(name);
+    UNIT_ASSERT_C(histogram, "no histogram " << name);
+
+    auto snapshot = histogram->Snapshot();
+
+    TStringBuilder buckets;
+    for (ui32 i = 0; i < snapshot->Count(); ++i) {
+        if (i > 0) {
+            buckets << ",";
+        }
+        buckets << snapshot->Value(i);
+    }
+
+    return buckets;
+}
+
 void DumpCounters(const TString& title, NMonitoring::TDynamicCounterPtr rootGroup) {
     Cerr << "TEST " << title << ":" << Endl
          << NormalizeJson(NMonitoring::ToJson(*rootGroup)) << Endl;
@@ -537,6 +566,81 @@ Y_UNIT_TEST_SUITE(TNodeDatabaseMetricsAggregatorTest) {
         // the "ConsumedCPU" cumulative counter. The tablets do NOT fill it themselves,
         // so an empty histogram here would mean the aggregate is never fed.
         UNIT_ASSERT_VALUES_EQUAL(GetHistogramTotal(leaderCounters, "HIST(ConsumedCPU)"), 2);
+    }
+
+    /**
+     * Verify that forgetting a tablet drops its observations from the percentile
+     * counters of the role bucket, while the accumulated cumulative counters keep
+     * the work the tablet had already done.
+     *
+     * @note The two kinds of the percentile counters are dropped by two different
+     *       mechanisms: an ordinary one is subtracted bucket by bucket right away,
+     *       while a HIST(x) aggregate is rebuilt from scratch on the next recalculation.
+     */
+    Y_UNIT_TEST(ForgetTabletDropsPercentileObservations) {
+        NMonitoring::TDynamicCounterPtr rootGroup = MakeIntrusive<NMonitoring::TDynamicCounters>();
+
+        auto aggregator = CreateNodeDatabaseMetricsAggregator(
+            rootGroup,
+            DATABASE_PATH,
+            MONITORING_PROJECT_ID
+        );
+
+        const TInstant now = TInstant::Seconds(100);
+
+        TFakeTablet leader1(1000, 0);
+        TFakeTablet leader2(2000, 0);
+
+        // The observations of the two partitions land in DIFFERENT buckets, so that
+        // a misaligned subtraction is not mistaken for a correct one
+        leader1
+            .IncrementPercentile(TX_LATENCY, 5)
+            .IncrementPercentile(TX_LATENCY, 5)
+            .AddCumulative(CONSUMED_CPU, 100);
+
+        leader2
+            .IncrementPercentile(TX_LATENCY, 500)
+            .IncrementPercentile(TX_LATENCY, 500)
+            .IncrementPercentile(TX_LATENCY, 500)
+            .AddCumulative(CONSUMED_CPU, 200);
+
+        for (auto* tablet : {&leader1, &leader2}) {
+            tablet->Report(aggregator, TDetailedMetricsSettings::MetricsLevelTable, now);
+        }
+
+        aggregator->RecalculateAllCounters();
+
+        auto leaderCounters = FindRoleBucketCounters(rootGroup, 0);
+        UNIT_ASSERT(leaderCounters);
+
+        // The ranges {0, 10, 100} become the 4 buckets <=0, (0;10], (10;100], (100;inf],
+        // so the 2 observations of the first partition land in the second bucket and
+        // the 3 observations of the second one in the last
+        UNIT_ASSERT_VALUES_EQUAL(GetHistogramBuckets(leaderCounters, "TxLatency"), "0,2,0,3");
+        UNIT_ASSERT_VALUES_EQUAL(GetHistogramTotal(leaderCounters, "HIST(ConsumedCPU)"), 2);
+        UNIT_ASSERT_VALUES_EQUAL(GetCounterValue(leaderCounters, "ConsumedCPU"), 100 + 200);
+
+        // The second partition is gone
+        aggregator->ForgetTablet(TABLE_ID, leader2.TabletId, leader2.FollowerId);
+        aggregator->RecalculateAllCounters();
+
+        DumpCounters("Table level counters after forgetting the second partition", rootGroup);
+
+        // Only the observations of the forgotten partition are subtracted, and only
+        // from its own bucket
+        UNIT_ASSERT_VALUES_EQUAL(GetHistogramBuckets(leaderCounters, "TxLatency"), "0,2,0,0");
+
+        // The histogram aggregate is rebuilt from the surviving partitions only
+        UNIT_ASSERT_VALUES_EQUAL(GetHistogramTotal(leaderCounters, "HIST(ConsumedCPU)"), 1);
+
+        // The accumulated cumulative counter is NOT reduced: the CPU the forgotten
+        // partition had burnt has still been burnt, and the series must not go backwards
+        UNIT_ASSERT_VALUES_EQUAL(GetCounterValue(leaderCounters, "ConsumedCPU"), 100 + 200);
+
+        // The last partition is gone too, so the whole table leaves the tree
+        aggregator->ForgetTablet(TABLE_ID, leader1.TabletId, leader1.FollowerId);
+
+        UNIT_ASSERT(!FindTableGroup(rootGroup));
     }
 
     /**
