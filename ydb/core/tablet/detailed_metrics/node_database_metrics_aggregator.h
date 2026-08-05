@@ -68,6 +68,10 @@ class TNodeDatabaseMetricsAggregator : public TThrRefBase {
 public:
     /**
      * @param[in] now Used to differentiate the cumulative counters into per second rates
+     *
+     * @warning Every named counter of the two counter sets is published as its own
+     *          series in every bucket, so the caller decides the cardinality. See the
+     *          TODO in TCountersBucket::Apply() before enabling the Partition level.
      */
     virtual void AddCounters(
         const TDetailedMetricsTableInfo& table,

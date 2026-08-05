@@ -99,6 +99,18 @@ public:
 
         // The counter set layout is a property of the tablet type, so the very first
         // reporting tablet defines it once and for all
+        //
+        // TODO(djant) restrict the counter set to the detailed metrics one. Whatever
+        //   the caller passes here is published verbatim, one series per counter per
+        //   bucket. The full Data Shard application counter set is ~32 simple,
+        //   ~117 cumulative and ~210 percentile histograms, so at the Partition level
+        //   a table with a few hundred partitions puts 10^5..10^6 series on one node,
+        //   plus a ui64 snapshot per contributor per category in the aggregates. The
+        //   node wide "tablets" group already dodges this by initializing from
+        //   GetOrAddLimitedAppCounters() ("without txs"), and
+        //   counters_detailed_datashard.proto declares the 19 counters actually wanted
+        //   here. Decide whether the trimming belongs to the caller (step 10) or to
+        //   this class, and until then do NOT enable the Partition level in production.
         if (!ExecutorCounters.IsInitialized) {
             ExecutorCounters.Initialize(&executorCounters);
         }
