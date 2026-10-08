@@ -3,6 +3,7 @@
 #include "labeled_counters_merger.h"
 #include "detailed_metrics/memory_tags.h"
 #include "detailed_metrics/node_database_metrics_aggregator.h"
+#include "detailed_metrics/ydb_metrics_aggregator.h"
 #include "detailed_metrics/ydb_metrics_mapper.h"
 #include "private/aggregated_counters.h"
 #include "private/aggregated_tablet_counters.h"
@@ -172,7 +173,9 @@ public:
         , DetailedMetricsEnabled(detailedMetricsEnabled)
     {
         if (!IsFollower) {
-            YdbCounters = MakeIntrusive<TYdbTabletCounters>(GetServiceCounters(counters, "ydb"), Counters);
+            // Only the leader actor writes "ydb"; it maps the follower actor's group too
+            YdbCounters = MakeIntrusive<TYdbTabletCounters>(GetServiceCounters(counters, "ydb"), Counters,
+                GetServiceCounters(counters, "followers"));
         }
 
         if (DetailedMetricsEnabled) {
@@ -811,10 +814,11 @@ private:
 
     private:
         /**
-         * The mapper from internal DataShard metrics to the corresponding
-         * public metrics (table.datashard.*).
+         * The mappers from internal DataShard metrics, one per role, each into a detached group;
+         * the aggregator sums them into the public metrics (table.datashard.*).
          */
-        TYdbMetricsMapperPtr DatashardYdbMetricsMapper;
+        TVector<TYdbMetricsMapperPtr> DatashardYdbMetricsMappers;
+        TYdbMetricsAggregatorPtr DatashardYdbMetricsAggregator;
 
         TCounterPtr ColumnShardScanRows_;
         TCounterPtr ColumnShardScanBytes_;
@@ -868,16 +872,28 @@ private:
     public:
         TYdbTabletCounters(
             ::NMonitoring::TDynamicCounterPtr ydbGroup,
-            ::NMonitoring::TDynamicCounterPtr tabletGroup
+            ::NMonitoring::TDynamicCounterPtr tabletGroup,
+            ::NMonitoring::TDynamicCounterPtr followerGroup = {}
         )
-            : DatashardYdbMetricsMapper(
-                CreateYdbMetricsMapperByTabletType(
+            : DatashardYdbMetricsAggregator(
+                CreateYdbMetricsAggregatorByTabletType(
                     TTabletTypes::DataShard,
-                    ydbGroup,
-                    tabletGroup
+                    ydbGroup
                 )
             )
         {
+            // A mapper assigns its targets, so two roles cannot share one group
+            auto addRole = [&](const TString& id, ::NMonitoring::TDynamicCounterPtr source, bool isFollower) {
+                auto mapped = MakeIntrusive<::NMonitoring::TDynamicCounters>();
+                DatashardYdbMetricsMappers.push_back(CreateYdbMetricsMapperByTabletType(
+                    TTabletTypes::DataShard, mapped, source, EYdbMetricNameScope::Aggregate, isFollower));
+                DatashardYdbMetricsAggregator->AddSourceCountersGroup(id, mapped, isFollower);
+            };
+            addRole("leaders", tabletGroup, false);
+            if (followerGroup) {
+                addRole("followers", followerGroup, true);
+            }
+
             ColumnShardScanRows_ = ydbGroup->GetNamedCounter("name",
                 "table.columnshard.scan.rows", true);
             ColumnShardScanBytes_ = ydbGroup->GetNamedCounter("name",
@@ -970,7 +986,10 @@ private:
         }
 
         void Transform() {
-            DatashardYdbMetricsMapper->TransferCounterValues();
+            for (auto& mapper : DatashardYdbMetricsMappers) {
+                mapper->TransferCounterValues();
+            }
+            DatashardYdbMetricsAggregator->RecalculateAllTargetCounters();
 
             if (ColumnShardScannedBytes_) {
                 ColumnShardScanRows_->Set(ColumnShardScannedRows_->Val());
